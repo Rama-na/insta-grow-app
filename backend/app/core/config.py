@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
+from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -21,6 +22,16 @@ class Settings(BaseSettings):
 
     # CORS
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+
+    # ── Azure AI Projects ─────────────────────────────────────────────────────
+    azure_ai_endpoint: Optional[str] = None
+    azure_ai_api_key: Optional[str] = None
+    azure_ai_agent_name: str = "agentaura"
+    azure_ai_agent_version: str = "1"
+
+    @property
+    def llm_enabled(self) -> bool:
+        return bool(self.azure_ai_endpoint and self.azure_ai_api_key)
 
     model_config = {"env_file": ".env"}
 

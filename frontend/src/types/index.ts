@@ -97,6 +97,9 @@ export interface OptimizationResult {
   final_pressure_drop_mbar: number
   reduction_pct: number
   suggestion: string
+  // LLM-generated (present when Azure AI is configured)
+  llm_optimization_analysis: string | null
+  llm_next_steps: string | null
 }
 
 // ── Job state ─────────────────────────────────────────────────────────────────
@@ -110,6 +113,7 @@ export interface JobState {
   message: string
   iterations: OptimizationIteration[]
   baseline: CFDResult | null
+  baseline_llm_analysis: string | null   // LLM commentary on baseline
   result: OptimizationResult | null
   error: string | null
 }
@@ -124,6 +128,7 @@ export interface WsMessage {
   message?: string
   iteration?: OptimizationIteration
   baseline?: CFDResult
+  baseline_llm_analysis?: string
   cost_map?: Array<{ arc_pos: number; pressure_pa: number; loss_intensity: number; label: string }>
   result?: OptimizationResult
   error?: string

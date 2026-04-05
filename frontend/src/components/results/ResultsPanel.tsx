@@ -10,11 +10,13 @@
 import { CheckCircle, AlertTriangle, Download, TrendingDown, ArrowRight } from 'lucide-react'
 import type { OptimizationResult, JobState } from '../../types'
 import { getSTLUrl } from '../../services/api'
+import AIInsightPanel from './AIInsightPanel'
 
 interface Props {
   jobId: string
   result: OptimizationResult
   state: JobState
+  baselineLlmAnalysis?: string | null
 }
 
 function KpiCard({ label, value, unit, highlight }: {
@@ -36,7 +38,7 @@ function KpiCard({ label, value, unit, highlight }: {
   )
 }
 
-export default function ResultsPanel({ jobId, result, state }: Props) {
+export default function ResultsPanel({ jobId, result, state, baselineLlmAnalysis }: Props) {
   const { baseline, optimized, optimized_geometry: optGeom,
           target_achieved, final_pressure_drop_mbar, reduction_pct, suggestion } = result
 
@@ -123,18 +125,27 @@ export default function ResultsPanel({ jobId, result, state }: Props) {
         </div>
       )}
 
-      {/* Suggestion */}
-      <div className="card border-blue-800 bg-blue-900/10">
-        <div className="flex gap-2 items-start">
-          <TrendingDown size={16} className="text-blue-400 mt-0.5 shrink-0" />
-          <div>
-            <p className="text-xs font-medium text-blue-300 uppercase tracking-wide mb-2">
-              AI Design Suggestion
-            </p>
-            <p className="text-xs text-slate-300 leading-relaxed">{suggestion}</p>
+      {/* Suggestion (rule-based fallback, shown only when no LLM analysis) */}
+      {!result.llm_optimization_analysis && (
+        <div className="card border-blue-800 bg-blue-900/10">
+          <div className="flex gap-2 items-start">
+            <TrendingDown size={16} className="text-blue-400 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-xs font-medium text-blue-300 uppercase tracking-wide mb-2">
+                Design Suggestion
+              </p>
+              <p className="text-xs text-slate-300 leading-relaxed">{suggestion}</p>
+            </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {/* AI Insight Panel (Azure agentaura) */}
+      <AIInsightPanel
+        baselineAnalysis={baselineLlmAnalysis}
+        optimizationAnalysis={result.llm_optimization_analysis}
+        nextSteps={result.llm_next_steps}
+      />
 
       {/* Downloads */}
       <div className="flex gap-3">

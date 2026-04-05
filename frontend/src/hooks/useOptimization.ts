@@ -14,6 +14,7 @@ interface OptimizationState {
   maxIterations: number
   iterations: OptimizationIteration[]
   baseline: CFDResult | null
+  baselineLlmAnalysis: string | null
   result: OptimizationResult | null
   error: string | null
   costMap: WsMessage['cost_map']
@@ -22,7 +23,8 @@ interface OptimizationState {
 const INITIAL: OptimizationState = {
   jobId: null, status: null, progress: 0, message: '',
   currentIteration: 0, maxIterations: 0, iterations: [],
-  baseline: null, result: null, error: null, costMap: undefined,
+  baseline: null, baselineLlmAnalysis: null,
+  result: null, error: null, costMap: undefined,
 }
 
 export function useOptimization() {
@@ -55,6 +57,7 @@ export function useOptimization() {
           if (msg.message)           next.message = msg.message
           if (msg.current_iteration != null) next.currentIteration = msg.current_iteration
           if (msg.baseline)          next.baseline = msg.baseline
+          if (msg.baseline_llm_analysis) next.baselineLlmAnalysis = msg.baseline_llm_analysis
           if (msg.cost_map)          next.costMap = msg.cost_map
           if (msg.result)            next.result = msg.result
           if (msg.error)             next.error = msg.error

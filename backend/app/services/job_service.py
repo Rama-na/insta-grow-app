@@ -4,12 +4,17 @@ In-process job queue.
 Each simulation+optimisation request gets a unique job ID.
 Jobs run in a background asyncio task and publish progress
 via an asyncio.Queue that the WebSocket endpoint reads.
+
+LLM calls (Azure AI agentaura) happen at two points:
+  1. After baseline CFD — to explain the physics of the initial result
+  2. After optimisation  — to explain what changed and suggest next steps
+Both calls are non-blocking (run_in_executor) and degrade gracefully
+when Azure credentials are absent.
 """
 from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
-from typing import Any
 
 from app.core.config import settings
 from app.core.logging_setup import logger
@@ -20,6 +25,9 @@ from app.models.schemas import (
 from app.modules.cfd.solver_factory import get_solver
 from app.modules.optimization.optimizer import BentPipeOptimizer
 from app.modules.postprocessing.cost_map import build_cost_map
+from app.modules.llm.cfd_analyst import (
+    analyse_baseline, analyse_optimization, suggest_next_steps,
+)
 
 
 # ── in-memory store ───────────────────────────────────────────────────────────
@@ -63,10 +71,13 @@ async def run_job(job_id: str, request: SimulationJobRequest) -> None:
                 setattr(state, k, v)
         q.put_nowait({**update, "job_id": job_id})
 
+    loop = asyncio.get_event_loop()
+
     try:
-        # ── Meshing ──────────────────────────────────────────────────────────
-        _push({"status": JobStatus.meshing, "message": "Generating geometry mesh…", "progress_pct": 5.0})
-        await asyncio.sleep(0.1)   # yield to event loop
+        # ── Step 1: Meshing ───────────────────────────────────────────────────
+        _push({"status": JobStatus.meshing,
+               "message": "Generating geometry mesh…", "progress_pct": 5.0})
+        await asyncio.sleep(0.1)
 
         from app.modules.geometry.bent_pipe_generator import BentPipeGenerator
         gen = BentPipeGenerator(
@@ -79,12 +90,13 @@ async def run_job(job_id: str, request: SimulationJobRequest) -> None:
         )
         gen.build_stl_mesh(job_dir / "baseline.stl")
 
-        # ── Baseline simulation ───────────────────────────────────────────────
-        _push({"status": JobStatus.simulating, "message": "Running baseline CFD…", "progress_pct": 15.0})
+        # ── Step 2: Baseline CFD ──────────────────────────────────────────────
+        _push({"status": JobStatus.simulating,
+               "message": "Running baseline CFD simulation…", "progress_pct": 15.0})
         await asyncio.sleep(0.1)
 
         solver = get_solver(request.solver.engine)
-        baseline: CFDResult = await asyncio.get_event_loop().run_in_executor(
+        baseline: CFDResult = await loop.run_in_executor(
             None,
             lambda: solver.run(
                 request.geometry, request.fluid,
@@ -96,19 +108,42 @@ async def run_job(job_id: str, request: SimulationJobRequest) -> None:
 
         _push({
             "status": JobStatus.simulating,
-            "message": f"Baseline complete: ΔP = {baseline.pressure_drop_mbar:.2f} mbar",
+            "message": f"Baseline CFD complete — ΔP = {baseline.pressure_drop_mbar:.2f} mbar. "
+                       f"{'Calling AI for analysis…' if settings.llm_enabled else ''}",
             "progress_pct": 25.0,
             "baseline": baseline,
             "cost_map": cost_map,
         })
 
-        # ── Optimisation loop ─────────────────────────────────────────────────
+        # ── Step 3: LLM baseline analysis (non-blocking) ──────────────────────
+        if settings.llm_enabled:
+            _push({"message": "AI agent analysing baseline flow field…",
+                   "progress_pct": 28.0})
+            llm_baseline_analysis = await loop.run_in_executor(
+                None,
+                lambda: analyse_baseline(
+                    request.geometry, request.fluid,
+                    request.boundary, baseline
+                ),
+            )
+            state.baseline_llm_analysis = llm_baseline_analysis
+            _push({
+                "baseline_llm_analysis": llm_baseline_analysis,
+                "message": "AI analysis complete. Starting optimisation…",
+                "progress_pct": 30.0,
+            })
+            logger.info(f"[{job_id}] LLM baseline analysis: {llm_baseline_analysis[:80]}…")
+        else:
+            logger.info(f"[{job_id}] LLM disabled — skipping baseline analysis.")
+
+        # ── Step 4: Bayesian optimisation ─────────────────────────────────────
         _push({"status": JobStatus.optimizing,
-               "message": "Starting optimisation…", "progress_pct": 30.0})
+               "message": "Starting Bayesian optimisation (Gaussian Process)…",
+               "progress_pct": 30.0})
 
         def _on_iteration(it: OptimizationIteration) -> None:
             state.iterations.append(it)
-            progress = 30.0 + (it.iteration / request.optimization.max_iterations) * 65.0
+            progress = 30.0 + (it.iteration / request.optimization.max_iterations) * 60.0
             q.put_nowait({
                 "job_id": job_id,
                 "status": JobStatus.optimizing,
@@ -116,8 +151,9 @@ async def run_job(job_id: str, request: SimulationJobRequest) -> None:
                 "progress_pct": round(progress, 1),
                 "iteration": it.model_dump(),
                 "message": (
-                    f"Iter {it.iteration}: θ={it.bend_angle}°, R/D={it.bend_radius_ratio}, "
-                    f"ΔP={it.pressure_drop_mbar:.2f} mbar"
+                    f"Iter {it.iteration}/{request.optimization.max_iterations}: "
+                    f"θ={it.bend_angle}°  R/D={it.bend_radius_ratio}  "
+                    f"ΔP={it.pressure_drop_mbar:.3f} mbar"
                 ),
             })
 
@@ -131,9 +167,41 @@ async def run_job(job_id: str, request: SimulationJobRequest) -> None:
             on_iteration=_on_iteration,
         )
 
-        opt_result = await asyncio.get_event_loop().run_in_executor(None, optimizer.run)
+        opt_result = await loop.run_in_executor(None, optimizer.run)
 
-        # Generate optimised geometry STL
+        # ── Step 5: LLM optimisation analysis ─────────────────────────────────
+        if settings.llm_enabled:
+            _push({"message": "AI agent reviewing optimisation result…",
+                   "progress_pct": 92.0})
+
+            llm_opt_analysis, llm_next_steps = await asyncio.gather(
+                loop.run_in_executor(
+                    None,
+                    lambda: analyse_optimization(
+                        request.geometry,
+                        opt_result.optimized_geometry,
+                        opt_result,
+                        request.optimization.target_value,
+                    ),
+                ),
+                loop.run_in_executor(
+                    None,
+                    lambda: suggest_next_steps(
+                        opt_result,
+                        request.optimization.target_value,
+                    ),
+                ),
+            )
+
+            opt_result = opt_result.model_copy(update={
+                "llm_optimization_analysis": llm_opt_analysis,
+                "llm_next_steps": llm_next_steps,
+                # Override the rule-based suggestion with LLM analysis
+                "suggestion": llm_opt_analysis or opt_result.suggestion,
+            })
+            logger.info(f"[{job_id}] LLM optimisation analysis complete.")
+
+        # ── Step 6: Generate optimised STL ────────────────────────────────────
         opt_gen = BentPipeGenerator(
             diameter=opt_result.optimized_geometry.diameter,
             wall_thickness=opt_result.optimized_geometry.wall_thickness,
@@ -146,7 +214,11 @@ async def run_job(job_id: str, request: SimulationJobRequest) -> None:
 
         _push({
             "status": JobStatus.completed,
-            "message": f"Done! ΔP reduced from {baseline.pressure_drop_mbar:.2f} to {opt_result.final_pressure_drop_mbar:.2f} mbar",
+            "message": (
+                f"Complete! ΔP reduced from {baseline.pressure_drop_mbar:.2f} mbar "
+                f"to {opt_result.final_pressure_drop_mbar:.2f} mbar "
+                f"({opt_result.reduction_pct:.1f}% reduction)"
+            ),
             "progress_pct": 100.0,
             "result": opt_result,
         })
@@ -155,7 +227,7 @@ async def run_job(job_id: str, request: SimulationJobRequest) -> None:
         logger.exception(f"Job {job_id} failed: {exc}")
         _push({
             "status": JobStatus.failed,
-            "message": "Job failed.",
+            "message": "Job failed — check server logs.",
             "error": str(exc),
         })
     finally:

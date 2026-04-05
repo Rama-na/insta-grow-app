@@ -12,6 +12,7 @@ import PipeViewer3D from './components/visualization/PipeViewer3D'
 import ConvergenceChart from './components/visualization/ConvergenceChart'
 import PressureHeatmap from './components/visualization/PressureHeatmap'
 import ResultsPanel from './components/results/ResultsPanel'
+import AIInsightPanel from './components/results/AIInsightPanel'
 import StatusBar from './components/layout/StatusBar'
 import { useOptimization } from './hooks/useOptimization'
 import { getCentreline } from './services/api'
@@ -123,12 +124,20 @@ export default function App() {
             </>
           )}
 
+          {/* AI baseline analysis — shown as soon as available (even mid-run) */}
+          {state.baselineLlmAnalysis && !isDone && (
+            <div className="mt-4">
+              <AIInsightPanel baselineAnalysis={state.baselineLlmAnalysis} />
+            </div>
+          )}
+
           {/* Show results when done */}
           {isDone && state.result && state.jobId && (
             <ResultsPanel
               jobId={state.jobId}
               result={state.result}
               state={state}
+              baselineLlmAnalysis={state.baselineLlmAnalysis}
             />
           )}
 

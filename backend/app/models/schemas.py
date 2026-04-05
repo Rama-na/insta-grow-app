@@ -140,6 +140,9 @@ class OptimizationResult(BaseModel):
     final_pressure_drop_mbar: float
     reduction_pct: float
     suggestion: str
+    # LLM-generated fields (populated when Azure AI is configured)
+    llm_optimization_analysis: Optional[str] = None
+    llm_next_steps: Optional[str] = None
 
 
 # ── Job state returned by /jobs/{id} ─────────────────────────────────────────
@@ -153,5 +156,6 @@ class JobState(BaseModel):
     message: str = ""
     iterations: list[OptimizationIteration] = []
     baseline: Optional[CFDResult] = None
+    baseline_llm_analysis: Optional[str] = None   # LLM commentary on baseline
     result: Optional[OptimizationResult] = None
     error: Optional[str] = None
