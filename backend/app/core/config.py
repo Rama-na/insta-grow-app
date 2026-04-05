@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     def llm_enabled(self) -> bool:
         return bool(self.azure_ai_endpoint and self.azure_ai_api_key)
 
-    model_config = {"env_file": ".env"}
+    model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 settings = Settings()
